@@ -80,7 +80,19 @@ async def main_middleware(request: Request, call_next):
         res.headers["X-Process-Time"] = f"{process_time:.6f}"
         return res
     
-    # Normal requests
+    # Check API key before route processing for /analytics so missing/wrong key always returns 401
+    if path == "/analytics":
+        x_api_key = request.headers.get("x-api-key")
+        if not x_api_key or x_api_key != ASSIGNED_API_KEY_Q7:
+            res = JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Invalid or missing API Key"}
+            )
+            res.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+            res.headers["X-Request-ID"] = str(uuid.uuid4())
+            res.headers["X-Process-Time"] = "0.000100"
+            return res
+
     start_time = time.perf_counter()
     response: Response = await call_next(request)
     process_time = time.perf_counter() - start_time

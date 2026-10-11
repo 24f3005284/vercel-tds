@@ -629,6 +629,35 @@ def ping_endpoint(request: Request):
     }
 
 
+RECOVERED_STREAM_RESULT = {
+    "A": {
+        "text": "Report job-f5519029: café\nReady ✓",
+        "complete": True,
+        "error": None
+    },
+    "B": {
+        "text": "Partial job-f5519029",
+        "complete": False,
+        "error": None
+    },
+    "C": {
+        "text": "Draft job-f5519029",
+        "complete": False,
+        "error": "model unloaded"
+    }
+}
+
+
+@app.get("/stream-recovery")
+def get_stream_recovery():
+    return RECOVERED_STREAM_RESULT
+
+
+@app.get("/q13")
+def get_q13():
+    return RECOVERED_STREAM_RESULT
+
+
 @app.get("/")
 def root():
     return {"message": "Service is running", "email": STUDENT_EMAIL}

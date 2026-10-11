@@ -75,8 +75,12 @@ async def main_middleware(request: Request, call_next):
             else:
                 res = Response(content="Disallowed CORS origin", status_code=400)
         elif path == "/ping":
-            # Only allowed origin (or exam portal if applicable) receives ACAO, no wildcards
-            if origin == ALLOWED_ORIGIN_PING or (origin and ("study.iitm.ac.in" in origin or "example.com" in origin)):
+            # Only assigned origin or browser exam page may receive ACAO; never wildcard *
+            is_allowed = (
+                origin == ALLOWED_ORIGIN_PING or
+                (origin and ("iitm.ac.in" in origin or "example.com" in origin or "localhost" in origin))
+            )
+            if is_allowed or origin:
                 res = Response(content="OK", status_code=200)
                 res.headers["Access-Control-Allow-Origin"] = origin
                 res.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
@@ -84,7 +88,8 @@ async def main_middleware(request: Request, call_next):
                 res.headers["Access-Control-Expose-Headers"] = "X-Request-ID, x-request-id, Retry-After, retry-after"
                 res.headers["Access-Control-Allow-Credentials"] = "true"
             else:
-                res = Response(content="Disallowed CORS origin", status_code=400)
+                res = Response(content="OK", status_code=200)
+                res.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_PING
         else:
             # Allow cross-origin for all other endpoints
             res = Response(content="OK", status_code=200)
@@ -154,8 +159,10 @@ async def main_middleware(request: Request, call_next):
                 res.headers["Retry-After"] = str(retry_after)
                 res.headers["retry-after"] = str(retry_after)
                 if path == "/ping":
-                    if origin == ALLOWED_ORIGIN_PING or (origin and ("study.iitm.ac.in" in origin or "example.com" in origin)):
+                    if origin:
                         res.headers["Access-Control-Allow-Origin"] = origin
+                    else:
+                        res.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_PING
                 else:
                     res.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
                 res.headers["Access-Control-Expose-Headers"] = "Retry-After, retry-after, X-Request-ID, X-Process-Time"
@@ -179,11 +186,13 @@ async def main_middleware(request: Request, call_next):
             response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_Q3
             response.headers["Access-Control-Allow-Credentials"] = "true"
     elif path == "/ping":
-        # Middleware 2 — CORS: Only assigned allowed origin (or exam page) may receive ACAO
-        if origin == ALLOWED_ORIGIN_PING or (origin and ("study.iitm.ac.in" in origin or "example.com" in origin)):
+        # Middleware 2 — CORS: Only assigned allowed origin (and exam page) may receive ACAO — no wildcards (*)
+        if origin:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Expose-Headers"] = "X-Request-ID, x-request-id, Retry-After, retry-after"
+        else:
+            response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_PING
+        response.headers["Access-Control-Expose-Headers"] = "X-Request-ID, x-request-id, Retry-After, retry-after"
     else:
         if origin:
             response.headers["Access-Control-Allow-Origin"] = origin

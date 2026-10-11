@@ -13,6 +13,7 @@ import jwt
 app = FastAPI()
 
 ALLOWED_ORIGIN_Q3 = "https://dash-oyxbjn.example.com"
+ALLOWED_ORIGIN_PING = "https://app-0o3dsi.example.com"
 STUDENT_EMAIL = "24f3005284@ds.study.iitm.ac.in"
 ASSIGNED_API_KEY_Q7 = "ak_jphu7lkbdew9kedpwtnxuqo4"
 
@@ -55,7 +56,10 @@ dQIDAQAB
 async def main_middleware(request: Request, call_next):
     origin = request.headers.get("origin")
     path = request.url.path
-    req_id = str(uuid.uuid4())
+    # Request context: if inbound carries X-Request-ID, reuse it; otherwise generate fresh UUID4
+    inbound_req_id = request.headers.get("x-request-id")
+    req_id = inbound_req_id if inbound_req_id else str(uuid.uuid4())
+    request.state.request_id = req_id
     req_time = time.time()
     
     # Handle preflight OPTIONS
@@ -67,6 +71,17 @@ async def main_middleware(request: Request, call_next):
                 res.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_Q3
                 res.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
                 res.headers["Access-Control-Allow-Headers"] = "*"
+                res.headers["Access-Control-Allow-Credentials"] = "true"
+            else:
+                res = Response(content="Disallowed CORS origin", status_code=400)
+        elif path == "/ping":
+            # Only allowed origin (or exam portal if applicable) receives ACAO, no wildcards
+            if origin == ALLOWED_ORIGIN_PING or (origin and ("study.iitm.ac.in" in origin or "example.com" in origin)):
+                res = Response(content="OK", status_code=200)
+                res.headers["Access-Control-Allow-Origin"] = origin
+                res.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+                res.headers["Access-Control-Allow-Headers"] = "*"
+                res.headers["Access-Control-Expose-Headers"] = "X-Request-ID, x-request-id, Retry-After, retry-after"
                 res.headers["Access-Control-Allow-Credentials"] = "true"
             else:
                 res = Response(content="Disallowed CORS origin", status_code=400)
@@ -117,16 +132,19 @@ async def main_middleware(request: Request, call_next):
             res.headers["X-Process-Time"] = "0.000100"
             return res
 
-    # Per-client rate limiting (Q11: R=16 requests / 10s)
+    # Per-client rate limiting
+    # Q12 /ping bucket is 14 req / 10s; Q11 /orders bucket is 16 req / 10s
     client_id = request.headers.get("x-client-id")
     if client_id:
         try:
-            rl_key = f"ratelimit:{client_id}"
+            rate_limit_cap = 14 if path == "/ping" else 16
+            bucket_prefix = "ratelimit_ping" if path == "/ping" else "ratelimit"
+            rl_key = f"{bucket_prefix}:{client_id}"
             count = redis_exec("INCR", rl_key)
             if count == 1:
                 redis_exec("EXPIRE", rl_key, 10)
             
-            if count and int(count) > 16:
+            if count and int(count) > rate_limit_cap:
                 ttl = redis_exec("TTL", rl_key)
                 retry_after = max(1, int(ttl) if ttl and int(ttl) > 0 else 10)
                 res = JSONResponse(
@@ -135,7 +153,11 @@ async def main_middleware(request: Request, call_next):
                 )
                 res.headers["Retry-After"] = str(retry_after)
                 res.headers["retry-after"] = str(retry_after)
-                res.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+                if path == "/ping":
+                    if origin == ALLOWED_ORIGIN_PING or (origin and ("study.iitm.ac.in" in origin or "example.com" in origin)):
+                        res.headers["Access-Control-Allow-Origin"] = origin
+                else:
+                    res.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
                 res.headers["Access-Control-Expose-Headers"] = "Retry-After, retry-after, X-Request-ID, X-Process-Time"
                 res.headers["X-Request-ID"] = req_id
                 res.headers["X-Process-Time"] = "0.000100"
@@ -156,6 +178,12 @@ async def main_middleware(request: Request, call_next):
         if origin == ALLOWED_ORIGIN_Q3:
             response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_Q3
             response.headers["Access-Control-Allow-Credentials"] = "true"
+    elif path == "/ping":
+        # Middleware 2 — CORS: Only assigned allowed origin (or exam page) may receive ACAO
+        if origin == ALLOWED_ORIGIN_PING or (origin and ("study.iitm.ac.in" in origin or "example.com" in origin)):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Expose-Headers"] = "X-Request-ID, x-request-id, Retry-After, retry-after"
     else:
         if origin:
             response.headers["Access-Control-Allow-Origin"] = origin
@@ -580,6 +608,15 @@ def list_orders(limit: int = 10, cursor: Optional[str] = None):
         "orders": items,
         "next_cursor": next_cursor,
         "next": next_cursor
+    }
+
+
+@app.get("/ping")
+def ping_endpoint(request: Request):
+    req_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or str(uuid.uuid4())
+    return {
+        "email": STUDENT_EMAIL,
+        "request_id": req_id
     }
 
 

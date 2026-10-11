@@ -116,6 +116,30 @@ async def main_middleware(request: Request, call_next):
             res.headers["X-Process-Time"] = "0.000100"
             return res
 
+    # Per-client rate limiting (Q11: R=16 requests / 10s)
+    client_id = request.headers.get("x-client-id")
+    if client_id:
+        try:
+            rl_key = f"ratelimit:{client_id}"
+            count = redis_exec("INCR", rl_key)
+            if count == 1:
+                redis_exec("EXPIRE", rl_key, 10)
+            
+            if count and int(count) > 16:
+                ttl = redis_exec("TTL", rl_key)
+                retry_after = max(1, int(ttl) if ttl and int(ttl) > 0 else 10)
+                res = JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={"detail": "Rate limit exceeded"}
+                )
+                res.headers["Retry-After"] = str(retry_after)
+                res.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+                res.headers["X-Request-ID"] = req_id
+                res.headers["X-Process-Time"] = "0.000100"
+                return res
+        except Exception:
+            pass
+
     start_time = time.perf_counter()
     response: Response = await call_next(request)
     process_time = time.perf_counter() - start_time
@@ -483,6 +507,76 @@ async def extract_invoice(request: Request):
         currency=currency,
         date=date
     )
+
+
+# --- Q11 Orders API (Idempotent POST, Cursor Pagination, Rate Limiting) ---
+TOTAL_ORDERS_CATALOG = 46
+
+@app.post("/orders", status_code=status.HTTP_201_CREATED)
+async def create_order(
+    request: Request,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+):
+    if idempotency_key:
+        cache_key = f"idemp:order:{idempotency_key}"
+        try:
+            cached_order = redis_exec("GET", cache_key)
+            if cached_order:
+                data = json.loads(cached_order)
+                return JSONResponse(status_code=status.HTTP_201_CREATED, content=data)
+        except Exception:
+            pass
+
+    # Create new order
+    order_id = str(uuid.uuid4())
+    order_data = {
+        "id": order_id,
+        "status": "created",
+        "created_at": time.time()
+    }
+
+    if idempotency_key:
+        try:
+            redis_exec("SET", f"idemp:order:{idempotency_key}", json.dumps(order_data), "EX", 3600)
+        except Exception:
+            pass
+
+    return order_data
+
+@app.get("/orders")
+def list_orders(limit: int = 10, cursor: Optional[str] = None):
+    # Fixed catalog 1 through 46
+    start_id = 1
+    if cursor:
+        try:
+            import base64
+            start_id = int(base64.urlsafe_b64decode(cursor.encode()).decode())
+        except Exception:
+            try:
+                start_id = int(cursor)
+            except Exception:
+                start_id = 1
+
+    items = []
+    curr = start_id
+    while curr <= TOTAL_ORDERS_CATALOG and len(items) < limit:
+        items.append({
+            "id": curr,
+            "description": f"Order #{curr}"
+        })
+        curr += 1
+
+    next_cursor = None
+    if curr <= TOTAL_ORDERS_CATALOG:
+        import base64
+        next_cursor = base64.urlsafe_b64encode(str(curr).encode()).decode()
+
+    return {
+        "items": items,
+        "orders": items,
+        "next_cursor": next_cursor,
+        "next": next_cursor
+    }
 
 
 @app.get("/")

@@ -5,7 +5,7 @@ import urllib.request
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, Response, status, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 import jwt
 
@@ -15,7 +15,10 @@ ALLOWED_ORIGIN_Q3 = "https://dash-oyxbjn.example.com"
 STUDENT_EMAIL = "24f3005284@ds.study.iitm.ac.in"
 ASSIGNED_API_KEY_Q7 = "ak_jphu7lkbdew9kedpwtnxuqo4"
 
-# Upstash Redis REST config (Q6 persistence)
+# Startup timestamp for uptime calculation
+STARTUP_TIME = time.time()
+
+# Upstash Redis REST config (persistence across serverless invocations)
 REDIS_URL = "https://wanted-herring-220319.upstash.io"
 REDIS_TOKEN = "gQAAAAAAA1yfAQIgcDE5YjU5MDhjZWFiMjU0ZjY1ODgxOWVjZjM0MTMwZjY0NQ"
 
@@ -46,11 +49,13 @@ SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
 dQIDAQAB
 -----END PUBLIC KEY-----"""
 
-# Custom CORS and Headers Middleware
+# Custom CORS, Instrumentation, and Headers Middleware
 @app.middleware("http")
 async def main_middleware(request: Request, call_next):
     origin = request.headers.get("origin")
     path = request.url.path
+    req_id = str(uuid.uuid4())
+    req_time = time.time()
     
     # Handle preflight OPTIONS
     if request.method == "OPTIONS":
@@ -65,7 +70,7 @@ async def main_middleware(request: Request, call_next):
             else:
                 res = Response(content="Disallowed CORS origin", status_code=400)
         else:
-            # Allow cross-origin for all other endpoints including /analytics
+            # Allow cross-origin for all other endpoints
             res = Response(content="OK", status_code=200)
             if origin:
                 res.headers["Access-Control-Allow-Origin"] = origin
@@ -76,9 +81,26 @@ async def main_middleware(request: Request, call_next):
             res.headers["Access-Control-Allow-Credentials"] = "true"
         
         process_time = time.perf_counter() - start_time
-        res.headers["X-Request-ID"] = str(uuid.uuid4())
+        res.headers["X-Request-ID"] = req_id
         res.headers["X-Process-Time"] = f"{process_time:.6f}"
         return res
+
+    # Instrument request count and record structured log in Redis
+    try:
+        redis_exec("INCR", "http_requests_total")
+        full_path = request.url.path
+        if request.url.query:
+            full_path = f"{full_path}?{request.url.query}"
+        log_entry = json.dumps({
+            "level": "info",
+            "ts": req_time,
+            "path": full_path,
+            "request_id": req_id
+        })
+        redis_exec("RPUSH", "app_logs", log_entry)
+        redis_exec("LTRIM", "app_logs", -500, -1)
+    except Exception:
+        pass
     
     # Check API key before route processing for /analytics so missing/wrong key always returns 401
     if path == "/analytics":
@@ -89,7 +111,7 @@ async def main_middleware(request: Request, call_next):
                 content={"detail": "Invalid or missing API Key"}
             )
             res.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
-            res.headers["X-Request-ID"] = str(uuid.uuid4())
+            res.headers["X-Request-ID"] = req_id
             res.headers["X-Process-Time"] = "0.000100"
             return res
 
@@ -98,7 +120,7 @@ async def main_middleware(request: Request, call_next):
     process_time = time.perf_counter() - start_time
     
     # Add timing and request-id
-    response.headers["X-Request-ID"] = str(uuid.uuid4())
+    response.headers["X-Request-ID"] = req_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
     # CORS headers for response
@@ -251,23 +273,6 @@ def get_count(key: str):
         return {"key": key, "count": 0}
     return {"key": key, "count": int(res)}
 
-@app.get("/healthz")
-def healthz():
-    try:
-        ping_res = redis_exec("PING")
-        if ping_res == "PONG":
-            return {"status": "ok", "redis": "up"}
-        else:
-            return JSONResponse(
-                status_code=503,
-                content={"status": "error", "redis": "down"}
-            )
-    except Exception:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "redis": "down"}
-        )
-
 
 # --- Q7 Endpoint (POST /analytics) ---
 class EventItem(BaseModel):
@@ -314,6 +319,58 @@ def analytics_endpoint(
         "revenue": round(total_revenue, 4),
         "top_user": top_user
     }
+
+
+# --- Q8 Observability Endpoints ---
+@app.get("/work")
+def do_work(n: int = 1):
+    return {"email": STUDENT_EMAIL, "done": n}
+
+@app.get("/metrics")
+def get_metrics():
+    try:
+        cnt = redis_exec("GET", "http_requests_total")
+        val = int(cnt) if cnt else 0
+    except Exception:
+        val = 0
+    body = (
+        "# HELP http_requests_total Total number of HTTP requests\n"
+        "# TYPE http_requests_total counter\n"
+        f"http_requests_total {val}\n"
+    )
+    return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+@app.get("/healthz")
+def health_check():
+    # Uptime in seconds since startup (non-negative float)
+    uptime = max(0.0, time.time() - STARTUP_TIME)
+    
+    # Also include redis: "up" if healthy for backwards compatibility with Q6
+    redis_status = "up"
+    try:
+        ping = redis_exec("PING")
+        if ping != "PONG":
+            redis_status = "down"
+    except Exception:
+        redis_status = "down"
+        
+    return {
+        "status": "ok",
+        "uptime_s": round(uptime, 3),
+        "redis": redis_status
+    }
+
+@app.get("/logs/tail")
+def get_logs_tail(limit: int = 10):
+    try:
+        # Fetch the last `limit` logs from Redis
+        raw_logs = redis_exec("LRANGE", "app_logs", -limit, -1)
+        if not raw_logs:
+            return []
+        parsed = [json.loads(x) for x in raw_logs]
+        return parsed
+    except Exception:
+        return []
 
 
 @app.get("/")

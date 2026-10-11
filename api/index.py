@@ -79,6 +79,7 @@ async def main_middleware(request: Request, call_next):
                 res.headers["Access-Control-Allow-Origin"] = "*"
             res.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
             res.headers["Access-Control-Allow-Headers"] = "*"
+            res.headers["Access-Control-Expose-Headers"] = "Retry-After, retry-after, X-Request-ID, X-Process-Time, Idempotency-Key, X-Client-Id"
             res.headers["Access-Control-Allow-Credentials"] = "true"
         
         process_time = time.perf_counter() - start_time
@@ -133,7 +134,9 @@ async def main_middleware(request: Request, call_next):
                     content={"detail": "Rate limit exceeded"}
                 )
                 res.headers["Retry-After"] = str(retry_after)
+                res.headers["retry-after"] = str(retry_after)
                 res.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+                res.headers["Access-Control-Expose-Headers"] = "Retry-After, retry-after, X-Request-ID, X-Process-Time"
                 res.headers["X-Request-ID"] = req_id
                 res.headers["X-Process-Time"] = "0.000100"
                 return res
@@ -159,6 +162,7 @@ async def main_middleware(request: Request, call_next):
             response.headers["Access-Control-Allow-Credentials"] = "true"
         else:
             response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = "Retry-After, retry-after, X-Request-ID, X-Process-Time, Idempotency-Key, X-Client-Id"
             
     return response
 

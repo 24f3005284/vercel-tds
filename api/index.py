@@ -658,6 +658,40 @@ def get_q13():
     return RECOVERED_STREAM_RESULT
 
 
+DOCKER_CACHE_RESULT = {
+    "A": {
+        "steps": ["L3", "L4", "L5"],
+        "seconds": 41
+    },
+    "B": {
+        "steps": ["L1", "L2", "L3", "L4", "L5"],
+        "seconds": 86
+    },
+    "C": {
+        "steps": [],
+        "seconds": 0
+    },
+    "D": {
+        "steps": [],
+        "seconds": 0
+    },
+    "E": {
+        "steps": ["L4", "L5"],
+        "seconds": 41
+    }
+}
+
+
+@app.get("/docker-cache")
+def get_docker_cache():
+    return DOCKER_CACHE_RESULT
+
+
+@app.get("/q14")
+def get_q14():
+    return DOCKER_CACHE_RESULT
+
+
 @app.get("/")
 def root():
     return {"message": "Service is running", "email": STUDENT_EMAIL}

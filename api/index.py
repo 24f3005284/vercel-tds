@@ -2,8 +2,8 @@ import time
 import uuid
 import json
 import urllib.request
-from typing import Optional, List
-from fastapi import FastAPI, Request, Response, status, Query
+from typing import Optional, List, Dict, Any
+from fastapi import FastAPI, Request, Response, status, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ app = FastAPI()
 
 ALLOWED_ORIGIN_Q3 = "https://dash-oyxbjn.example.com"
 STUDENT_EMAIL = "24f3005284@ds.study.iitm.ac.in"
+ASSIGNED_API_KEY_Q7 = "ak_jphu7lkbdew9kedpwtnxuqo4"
 
 # Upstash Redis REST config (Q6 persistence)
 REDIS_URL = "https://wanted-herring-220319.upstash.io"
@@ -64,7 +65,7 @@ async def main_middleware(request: Request, call_next):
             else:
                 res = Response(content="Disallowed CORS origin", status_code=400)
         else:
-            # Allow cross-origin for all other endpoints
+            # Allow cross-origin for all other endpoints including /analytics
             res = Response(content="OK", status_code=200)
             if origin:
                 res.headers["Access-Control-Allow-Origin"] = origin
@@ -254,6 +255,53 @@ def healthz():
             status_code=503,
             content={"status": "error", "redis": "down"}
         )
+
+
+# --- Q7 Endpoint (POST /analytics) ---
+class EventItem(BaseModel):
+    user: str
+    amount: float
+    ts: Optional[Any] = None
+
+class AnalyticsBatchRequest(BaseModel):
+    events: List[EventItem]
+
+@app.post("/analytics")
+def analytics_endpoint(
+    req: AnalyticsBatchRequest,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    if not x_api_key or x_api_key != ASSIGNED_API_KEY_Q7:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Invalid or missing API Key"}
+        )
+    
+    total_events = len(req.events)
+    unique_users_set = set()
+    total_revenue = 0.0
+    user_positive_revenue: Dict[str, float] = {}
+    
+    for event in req.events:
+        user = event.user
+        unique_users_set.add(user)
+        amt = event.amount
+        if amt > 0:
+            total_revenue += amt
+            user_positive_revenue[user] = user_positive_revenue.get(user, 0.0) + amt
+            
+    if user_positive_revenue:
+        top_user = max(user_positive_revenue.items(), key=lambda item: item[1])[0]
+    else:
+        top_user = ""
+        
+    return {
+        "email": STUDENT_EMAIL,
+        "total_events": total_events,
+        "unique_users": len(unique_users_set),
+        "revenue": round(total_revenue, 4),
+        "top_user": top_user
+    }
 
 
 @app.get("/")

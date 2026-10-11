@@ -1,5 +1,7 @@
 import time
 import uuid
+import json
+import urllib.request
 from typing import Optional, List
 from fastapi import FastAPI, Request, Response, status, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +13,24 @@ app = FastAPI()
 
 ALLOWED_ORIGIN_Q3 = "https://dash-oyxbjn.example.com"
 STUDENT_EMAIL = "24f3005284@ds.study.iitm.ac.in"
+
+# Upstash Redis REST config (Q6 persistence)
+REDIS_URL = "https://wanted-herring-220319.upstash.io"
+REDIS_TOKEN = "gQAAAAAAA1yfAQIgcDE5YjU5MDhjZWFiMjU0ZjY1ODgxOWVjZjM0MTMwZjY0NQ"
+
+def redis_exec(*args):
+    payload = json.dumps(args).encode("utf-8")
+    req = urllib.request.Request(
+        REDIS_URL,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {REDIS_TOKEN}",
+            "Content-Type": "application/json"
+        }
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        return data.get("result")
 
 # OIDC Verification Config (Q4)
 IDP_ISSUER = "https://idp.exam.local"
@@ -26,7 +46,6 @@ dQIDAQAB
 -----END PUBLIC KEY-----"""
 
 # Custom CORS and Headers Middleware
-# Handles strict origin for Q3 /stats, and open CORS for Q5 /effective-config and others
 @app.middleware("http")
 async def main_middleware(request: Request, call_next):
     origin = request.headers.get("origin")
@@ -45,7 +64,7 @@ async def main_middleware(request: Request, call_next):
             else:
                 res = Response(content="Disallowed CORS origin", status_code=400)
         else:
-            # For other routes including /effective-config, allow cross-origin
+            # Allow cross-origin for all other endpoints
             res = Response(content="OK", status_code=200)
             if origin:
                 res.headers["Access-Control-Allow-Origin"] = origin
@@ -160,7 +179,6 @@ def coerce_config_value(key: str, val):
 
 @app.get("/effective-config")
 def effective_config(request: Request):
-    # Layer 1: defaults (hardcoded)
     config = {
         "port": 8000,
         "workers": 1,
@@ -168,34 +186,22 @@ def effective_config(request: Request):
         "log_level": "info",
         "api_key": "default-secret-000"
     }
-    
-    # Layer 2: config.development.yaml
-    # port: 8840, debug: true
     config["port"] = 8840
     config["debug"] = True
-    
-    # Layer 3: .env file
-    # APP_PORT=8122, NUM_WORKERS=10 (alias NUM_WORKERS -> workers)
     config["port"] = 8122
     config["workers"] = 10
-    
-    # Layer 4: OS env vars (APP_* prefix)
-    # APP_DEBUG=true, APP_API_KEY=key-e3p0ajqk6v
     config["debug"] = True
     config["api_key"] = "key-e3p0ajqk6v"
     
-    # Layer 5: CLI overrides passed via ?set=key=value query parameters
     query_params = request.query_params.multi_items()
     for param_key, param_val in query_params:
         if param_key == "set" and "=" in param_val:
             k, v = param_val.split("=", 1)
             k = k.strip()
             v = v.strip()
-            # If alias is used in CLI override
             if k == "NUM_WORKERS":
                 k = "workers"
             elif k.startswith("APP_"):
-                # Handle potential APP_ prefix
                 sub = k[4:].lower()
                 if sub in ("port", "workers", "debug", "log_level", "api_key"):
                     k = sub
@@ -206,21 +212,48 @@ def effective_config(request: Request):
             except Exception:
                 config[k] = v
                 
-    # Final type coercion pass for standard keys
     result = {}
     for k in ("port", "workers", "debug", "log_level", "api_key"):
         if k in config:
             result[k] = coerce_config_value(k, config[k])
             
-    # Also include any extra custom keys if passed via ?set=
     for k, v in config.items():
         if k not in result and k != "NUM_WORKERS":
             result[k] = coerce_config_value(k, v)
             
-    # Secret masking: api_key must always appear as "****" in the response
     result["api_key"] = "****"
-    
     return result
+
+
+# --- Q6 Endpoints (Multi-Container / Redis persistence) ---
+@app.post("/hit/{key}")
+def hit_key(key: str):
+    res = redis_exec("INCR", f"counter:{key}")
+    return {"key": key, "count": int(res)}
+
+@app.get("/count/{key}")
+def get_count(key: str):
+    res = redis_exec("GET", f"counter:{key}")
+    if res is None:
+        return {"key": key, "count": 0}
+    return {"key": key, "count": int(res)}
+
+@app.get("/healthz")
+def healthz():
+    try:
+        ping_res = redis_exec("PING")
+        if ping_res == "PONG":
+            return {"status": "ok", "redis": "up"}
+        else:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "redis": "down"}
+            )
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "redis": "down"}
+        )
 
 
 @app.get("/")

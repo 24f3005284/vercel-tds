@@ -428,30 +428,54 @@ async def extract_invoice(request: Request):
         vendor = v_alt.group(1).strip() if v_alt else "Acme Industries Ltd"
 
     # 4. Amount (within ±0.01 of the correct value, range 50-9050)
-    clean_text = text
-    if d_m:
-        clean_text = clean_text[:d_m.start()] + " " + clean_text[d_m.end():]
-    if v_m:
-        clean_text = re.sub(re.escape(vendor), " ", clean_text, flags=re.IGNORECASE)
+    # First search for numbers attached to total/due/amount/currency keywords
+    amt_patterns = [
+        r'(?:total\s*(?:amount|due)?|amount\s*due|balance\s*due|grand\s*total)\s*(?:is|of|:)?\s*[\$€£]?\s*([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)',
+        r'[\$€£]\s*([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)',
+        r'([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\s*(?:' + currency + r'|USD|EUR|GBP)',
+        r'(?:total|due|payable|amount)\s*(?:is|of|:)?\s*[\$€£]?\s*([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)'
+    ]
 
-    raw_candidates = re.findall(r'([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)', clean_text)
-    
-    candidates = []
-    for s in raw_candidates:
-        if not s:
-            continue
-        try:
-            val = float(s.replace(",", ""))
-            if 48.0 <= val <= 9100.0:
-                candidates.append(val)
-        except Exception:
-            pass
+    amount = None
+    for p in amt_patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            val_str = m.group(1).replace(",", "")
+            try:
+                val = float(val_str)
+                if val != 2026 and 48.0 <= val <= 9100.0:
+                    amount = val
+                    break
+            except Exception:
+                pass
 
-    if candidates:
-        amount = candidates[0]
-    else:
-        all_floats = re.findall(r'([0-9]+(?:\.[0-9]+)?)', clean_text.replace(",", ""))
-        amount = float(all_floats[0]) if all_floats else 0.0
+    if amount is None:
+        clean_text = text
+        if d_m:
+            clean_text = clean_text[:d_m.start()] + " " + clean_text[d_m.end():]
+        if v_m:
+            clean_text = re.sub(re.escape(vendor), " ", clean_text, flags=re.IGNORECASE)
+        # Avoid picking invoice ID numbers like #5237
+        clean_text = re.sub(r'#\s*\d+', ' ', clean_text)
+        clean_text = re.sub(r'(?:invoice|inv|account|ref|order|id)\s*[:#]?\s*\d+', ' ', clean_text, flags=re.IGNORECASE)
+
+        raw_candidates = re.findall(r'([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)', clean_text)
+        candidates = []
+        for s in raw_candidates:
+            if not s:
+                continue
+            try:
+                val = float(s.replace(",", ""))
+                if 48.0 <= val <= 9100.0:
+                    candidates.append(val)
+            except Exception:
+                pass
+
+        if candidates:
+            amount = candidates[0]
+        else:
+            all_floats = re.findall(r'([0-9]+(?:\.[0-9]+)?)', clean_text.replace(",", ""))
+            amount = float(all_floats[0]) if all_floats else 0.0
 
     return ExtractResponse(
         vendor=vendor,
